@@ -1,0 +1,65 @@
+/*
+ * Firmware for Seeed Studio XIAO ESP32C3
+ * Acts as a serial passthrough to a Grove Wio-E5 LoRaWAN Module.
+ *
+ * How it works:
+ * 1. Listens for input from the USB Serial Monitor.
+ * 2. Forwards that input directly to the Wio-E5 via UART.
+ * 3. Listens for the response from the Wio-E5.
+ * 4. Forwards that response back to the USB Serial Monitor.
+ *
+ * by Gemini
+ */
+
+// Define the pins for the hardware serial (UART1) that will connect to the Wio-E5
+// These are the standard Grove connector pins on the Seeed Studio XIAO ESP32C3
+// D4 (GPIO7) is the TX pin for sending data TO the Wio-E5's RX pin
+#define WIO_TX_PIN 7
+// D5 (GPIO6) is the RX pin for receiving data FROM the Wio-E5's TX pin
+#define WIO_RX_PIN 6
+
+// Define the baud rates for communication
+#define USB_SERIAL_BAUD 115200 // Baud rate for the USB Serial Monitor
+#define WIO_SERIAL_BAUD 9600   // Default baud rate for the Wio-E5
+
+void setup() {
+  // Start the serial communication with the computer via USB
+  Serial.begin(USB_SERIAL_BAUD);
+  // Wait for the serial port to be ready (optional, but good practice)
+  while (!Serial);
+
+  // Start the hardware serial communication with the Wio-E5 module
+  // We use Serial1, the second hardware serial port on the ESP32C3
+  // begin(baudrate, config, rxPin, txPin);
+  Serial1.begin(WIO_SERIAL_BAUD, SERIAL_8N1, WIO_RX_PIN, WIO_TX_PIN);
+
+  // Give a small delay to ensure all serial ports are properly initialized
+  delay(100);
+
+  Serial.println("🚀 XIAO ESP32C3 to Wio-E5 Serial Passthrough Initialized!");
+  Serial.println("-----------------------------------------------------");
+  Serial.print("Forwarding USB (Baud: ");
+  Serial.print(USB_SERIAL_BAUD);
+  Serial.print(") <--> UART1 (Baud: ");
+  Serial.print(WIO_SERIAL_BAUD);
+  Serial.println(")");
+  Serial.println("\n➡️ IMPORTANT: Set your Serial Monitor's line ending to 'Both NL & CR'.");
+  Serial.println("Enter AT commands below to control the Wio-E5.");
+  Serial.println("-----------------------------------------------------");
+}
+
+void loop() {
+  // Check for data coming from the USB Serial Monitor (your computer)
+  if (Serial.available()) {
+    // Read the data and immediately forward it to the Wio-E5
+    char c = Serial.read();
+    Serial1.write(c);
+  }
+
+  // Check for data coming from the Wio-E5
+  if (Serial1.available()) {
+    // Read the data and immediately forward it to the USB Serial Monitor
+    char c = Serial1.read();
+    Serial.write(c);
+  }
+}
