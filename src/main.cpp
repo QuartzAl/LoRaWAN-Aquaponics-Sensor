@@ -26,6 +26,9 @@
 #include "LoRa-E5.h"
 #include <ADS1x15.h>
 #include <Preferences.h>
+#include <CayenneLPP.h>
+#include "index.h" // Include the HTML content for the web server
+
 
 // --- Pin Definitions ---
 // LoRa-E5 Module UART pins
@@ -80,8 +83,8 @@ void LoRa_setup(void) {
 }
 
 #define AP_DEFAULT_NAME "XIAO-ESP32C3-AP" // Access Point name
-#define AP_DEFAULT_PASSWORD "password" // Access Point password
-#define DEFAULT_SENSOR_INTERVAL 5000 // Default sensor interval in milliseconds
+#define AP_DEFAULT_PASSWORD "Access@Sensor" // Access Point password
+#define DEFAULT_SENSOR_INTERVAL 120 * 1000 // Default sensor interval in milliseconds
 #define DEFAULT_OLED_TITLE "Petra DO Sensor"
 
 #define AP_NAME_KEY "ap_name"
@@ -89,6 +92,10 @@ void LoRa_setup(void) {
 #define SENSOR_INTERVAL_KEY "sensor_interval"
 #define OLED_TITLE_KEY "oled_title"
 #define USE_WIFI_MANAGER_KEY "use_wifi_manager"
+
+// Define channels for each sensor to differentiate them in the payload
+#define DISSOLVED_OXYGEN_CHANNEL 1
+#define AIR_QUALITY_CHANNEL      2
 
 // --- Global Variables ---
 unsigned long previousSensorMillis = 0;
@@ -112,6 +119,8 @@ void sendSensorDataLora();
 void processLoraSend();
 float processGasData();
 float processOxygenData();
+float calculate_ppm(float voltage, const char* sensor_type);
+float readDO(float voltage_mv, float temperature_c);
 
 void setup() {
     Serial.begin(115200);
@@ -291,192 +300,36 @@ void processLoraSend() {
 }
 
 void sendSensorDataLora() {
+    // 1. Read raw voltage data from sensors
     float gasVoltage = processGasData();
     float oxygenVoltage = processOxygenData();
 
-    String data = "{\"Oxygen\":" + String(oxygenVoltage, 3) + ", \"Methane\":" + String(gasVoltage, 3) + "}";
-    Serial.print("Sending sensor data via LoRa: ");
-    Serial.println(data);
+    // 2. Instantiate a CayenneLPP object with a maximum payload size.
+    // The maximum payload size depends on your LoRaWAN region and data rate.
+    // We are using a common max size of 51 bytes.
+    CayenneLPP lpp(51);
 
-    lora.transferPacket((unsigned char*)data.c_str(), data.length(), Tx_and_ACK_RX_timeout);
+    // 3. Add sensor data to the payload using the library's functions.
+    // We use the Analog Input type for both sensors, as the standard doesn't
+    // define specific types for them. Each sensor is placed on a different
+    // channel to distinguish them.
+    // The library automatically handles the scaling and encoding for us.
+    lpp.addAnalogInput(DISSOLVED_OXYGEN_CHANNEL, oxygenVoltage);
+    lpp.addAnalogInput(AIR_QUALITY_CHANNEL, gasVoltage);
+
+    // 4. Get the final binary payload and its size.
+    // The library provides a pointer to the internal buffer and its current size.
+    uint8_t* payload_buffer = lpp.getBuffer();
+    uint8_t payload_size = lpp.getSize();
+
+    // 5. Send the payload via the LoRa module.
+    // The data is sent with a timeout and expects an acknowledgment.
+    lora.transferPacket(payload_buffer, payload_size, Tx_and_ACK_RX_timeout);
 }
 
 // --- Web Server Handlers ---
 void handleRoot() {
-    String html = R"rawliteral(
-<!DOCTYPE HTML><html><head>
-<title>ESP32 LoRa Sender</title>
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<style>
-  body { font-family: Arial, sans-serif; text-align: center; background-color: #f4f4f4; color: #333; }
-  .container { max-width: 500px; margin: 30px auto; padding: 20px; background-color: #fff; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
-  h2 { color: #0056b3; }
-  input[type=text], input[type=number] { width: calc(100% - 24px); padding: 12px; margin: 10px 0; border: 1px solid #ccc; border-radius: 4px; }
-  input[type=submit] { background-color: #007bff; color: white; padding: 14px 20px; margin: 8px 0; border: none; border-radius: 4px; cursor: pointer; width: 100%; font-size: 16px; }
-  input[type=submit]:hover { background-color: #0056b3; }
-  input[type=submit]:disabled { background-color: #cccccc; }
-  #status, #titleStatus, #intervalStatus { margin-top: 15px; font-size: 1.1em; font-weight: bold; min-height: 20px;}
-  .success { color: #28a745; }
-  .error { color: #dc3545; }
-  hr { border: 0; height: 1px; background: #ddd; margin: 30px 0; }
-</style>
-</head><body>
-<div class="container">
-  <h2>LoRa Message Sender</h2>
-  <form id="sendForm">
-    <input type="text" id="message" name="message" placeholder="Enter message to send" required>
-    <input type="submit" id="sendButton" value="Send Message">
-  </form>
-  <div id="status"></div>
-  <hr>
-  <h2>Update Display Title</h2>
-  <form id="titleForm">
-    <input type="text" id="newTitle" name="title" placeholder="New title (max 10 chars)" maxlength="10" required>
-    <input type="submit" id="titleButton" value="Update Title">
-  </form>
-  <div id="titleStatus"></div>
-  <hr>
-  <h2>Update Sensor Interval</h2>
-  <form id="intervalForm">
-    <input type="number" id="newInterval" name="interval" placeholder="New interval in seconds (min 5)" min="5" required>
-    <input type="submit" id="intervalButton" value="Update Interval">
-  </form>
-  <div id="intervalStatus"></div>
-  <hr>
-  <h2>Update Water Temperature</h2>
-  <form id="waterTempForm">
-    <input type="number" id="newWaterTemp" name="waterTemp" placeholder="New water temperature (°C)" required>
-    <input type="submit" id="waterTempButton" value="Update Water Temperature">
-  </form>
-  <div id="waterTempStatus"></div>
-</div>
-<script>
-  const sendForm = document.getElementById('sendForm');
-  const sendButton = document.getElementById('sendButton');
-  const statusDiv = document.getElementById('status');
-  let pollingInterval;
-
-  sendForm.addEventListener('submit', function(e) {
-    e.preventDefault();
-    const message = document.getElementById('message').value;
-    
-    sendButton.disabled = true;
-    statusDiv.className = '';
-    statusDiv.textContent = 'Sending...';
-
-    fetch('/send', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: 'message=' + encodeURIComponent(message)
-    })
-    .then(response => {
-      if (response.ok) {
-        pollingInterval = setInterval(checkStatus, 1000);
-      } else { throw new Error('Server error.'); }
-    })
-    .catch(error => {
-      statusDiv.className = 'error';
-      statusDiv.textContent = 'Error: Could not send message.';
-      sendButton.disabled = false;
-    });
-  });
-
-  function checkStatus() {
-    fetch('/status')
-      .then(response => response.text())
-      .then(statusText => {
-        if (statusText === 'SUCCESS') {
-          clearInterval(pollingInterval);
-          statusDiv.className = 'success';
-          statusDiv.textContent = 'Message Sent Successfully!';
-          sendButton.disabled = false;
-        } else if (statusText === 'FAILED') {
-          clearInterval(pollingInterval);
-          statusDiv.className = 'error';
-          statusDiv.textContent = 'Failed: Message could not be sent.';
-          sendButton.disabled = false;
-        } else if (statusText === 'SENDING') {
-          statusDiv.textContent = 'Waiting for confirmation...';
-        }
-      })
-      .catch(error => {
-        clearInterval(pollingInterval);
-        statusDiv.className = 'error';
-        statusDiv.textContent = 'Error: Lost connection to server.';
-        sendButton.disabled = false;
-      });
-  }
-
-  const titleForm = document.getElementById('titleForm');
-  const titleButton = document.getElementById('titleButton');
-  const titleStatusDiv = document.getElementById('titleStatus');
-
-  titleForm.addEventListener('submit', function(e) {
-    e.preventDefault();
-    const newTitle = document.getElementById('newTitle').value;
-
-    titleButton.disabled = true;
-    titleStatusDiv.textContent = 'Updating...';
-
-    fetch('/settitle', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: 'title=' + encodeURIComponent(newTitle)
-    })
-    .then(response => response.text().then(text => ({ ok: response.ok, text })))
-    .then(({ ok, text }) => {
-      if (ok) {
-        titleStatusDiv.className = 'success';
-        titleStatusDiv.textContent = text;
-      } else {
-        titleStatusDiv.className = 'error';
-        titleStatusDiv.textContent = 'Error: ' + text;
-      }
-      titleButton.disabled = false;
-    })
-    .catch(error => {
-      titleStatusDiv.className = 'error';
-      titleStatusDiv.textContent = 'Error: Could not update title.';
-      titleButton.disabled = false;
-    });
-  });
-
-  const intervalForm = document.getElementById('intervalForm');
-  const intervalButton = document.getElementById('intervalButton');
-  const intervalStatusDiv = document.getElementById('intervalStatus');
-
-  intervalForm.addEventListener('submit', function(e) {
-    e.preventDefault();
-    const newInterval = document.getElementById('newInterval').value;
-
-    intervalButton.disabled = true;
-    intervalStatusDiv.textContent = 'Updating...';
-
-    fetch('/setinterval', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: 'interval=' + encodeURIComponent(newInterval)
-    })
-    .then(response => response.text().then(text => ({ ok: response.ok, text })))
-    .then(({ ok, text }) => {
-      if (ok) {
-        intervalStatusDiv.className = 'success';
-        intervalStatusDiv.textContent = text;
-      } else {
-        intervalStatusDiv.className = 'error';
-        intervalStatusDiv.textContent = 'Error: ' + text;
-      }
-      intervalButton.disabled = false;
-    })
-    .catch(error => {
-      intervalStatusDiv.className = 'error';
-      intervalStatusDiv.textContent = 'Error: Could not update interval.';
-      intervalButton.disabled = false;
-    });
-  });
-</script>
-</body></html>)rawliteral";
-    server.send(200, "text/html", html);
+    server.send(200, "text/html", index_html);
 }
 
 void handleSend() {
@@ -537,9 +390,9 @@ void handleSetInterval() {
         String intervalStr = server.arg("interval");
         long newInterval = intervalStr.toInt(); // Convert string to long
 
-        // Validation: Must be a number and at least 5 seconds.
+        // Validation: Must be a number and at least 90 seconds.
         // .toInt() returns 0 for non-numeric strings, which fails the check.
-        if (newInterval >= 5) {
+        if (newInterval >= 90) {
             sensorInterval = newInterval * 1000; // Convert seconds to milliseconds
             Serial.print("Sensor interval updated to: ");
             Serial.print(newInterval);
@@ -548,7 +401,7 @@ void handleSetInterval() {
             server.send(200, "text/plain", "Interval updated to " + String(newInterval) + " seconds.");
         } else {
             // Send error if validation fails
-            server.send(400, "text/plain", "Invalid interval. Must be at least 5 seconds.");
+            server.send(400, "text/plain", "Invalid interval. Must be at least 90 seconds.");
         }
     } else {
         // Send error if argument is missing
@@ -574,7 +427,7 @@ void readAndDisplaySensorData(String msg) {
     } else {
       display.print("SSID: ");
       display.println(AP_DEFAULT_NAME);
-      display.print("Password: ");
+      display.print("Pass: ");
       display.println(AP_DEFAULT_PASSWORD);
     }
 
@@ -588,17 +441,17 @@ void readAndDisplaySensorData(String msg) {
     }
     display.println(""); // Spacer
 
-    // Display methane gas data
+    // Display air quality data
     float gas = processGasData();
-    display.print("Methane: ");
-    display.print(gas, 2);
-    display.println(" V");
+    display.print("Air: ");
+    display.print(gas, 3);
+    display.println(" PPM");
     
     // Display Dissolved Oxygen data
     float oxygen= processOxygenData();
     display.print("Oxygen: ");
-    display.print(oxygen, 2);
-    display.println(" V");
+    display.print(oxygen, 3);
+    display.println(" mg/L");
     display.println(""); // Spacer
 
     if (msg.length() > 0) {
@@ -615,7 +468,12 @@ float processGasData() {
     // calculate voltage from integer and display it 
     float voltage = ADS.toVoltage(1) * gasValue;
     Serial.println("Gas sensor voltage: " + String(voltage, 3) + " V");
-    return voltage;
+
+    // Calculate PPM for the gas sensor
+    float ppm = calculate_ppm(voltage, "TGS2600"); // Example for TGS2602 sensor
+    Serial.println("Gas sensor PPM: " + String(ppm, 2) + " ppm");
+
+    return ppm;
 }
 
 float processOxygenData() {
@@ -623,5 +481,76 @@ float processOxygenData() {
     // calculate voltage from integer and display it 
     float voltage = ADS.toVoltage(1) * oxygenValue;
     Serial.println("Oxygen sensor voltage: " + String(voltage, 3) + " V");
-    return voltage;
+
+    float oxygen = readDO(voltage, 26.2); 
+    Serial.println("Dissolved Oxygen: " + String(oxygen, 2) + " mg/L");
+
+    return oxygen;
+}
+
+
+/**
+ * @param voltage_mv - The voltage in millivolts.
+ * @param temperature_c - The temperature in degrees Celsius.
+ * @returns The calculated dissolved oxygen (DO) value.
+ */
+float readDO(float voltage_mv, float temperature_c) {
+    // Single point calibration needs to be filled CAL1_V and CAL1_T
+    const float CAL1_V = 340.0; // mV
+    const float CAL1_T = 26.2; // °C
+
+    // DO_Table values are stored as floats for consistent type handling
+    const float DO_Table[] = {
+        14460.0, 14220.0, 13820.0, 13440.0, 13090.0, 12740.0, 12420.0, 12110.0, 11810.0, 11530.0,
+        11260.0, 11010.0, 10770.0, 10530.0, 10300.0, 10080.0, 9860.0, 9660.0, 9460.0, 9270.0,
+        9080.0, 8900.0, 8730.0, 8570.0, 8410.0, 8250.0, 8110.0, 7960.0, 7820.0, 7690.0,
+        7560.0, 7430.0, 7300.0, 7180.0, 7070.0, 6950.0, 6840.0, 6730.0, 6630.0, 6530.0, 6410.0
+    };
+
+    // V_saturation calculation using floating-point numbers
+    float V_saturation = CAL1_V + 35.0 * (temperature_c - CAL1_T);
+
+    // Ensure temperature_c is a valid index for the DO_Table array
+    int temp_index = (int)temperature_c;
+    if (temp_index < 0 || temp_index >= sizeof(DO_Table) / sizeof(DO_Table[0])) {
+        // Handle out-of-bounds error, e.g., by returning 0 or a specific error value
+        Serial.println("Error: Temperature is too hot or too cold, please remove sensor immediately\n");
+        return 0.0;
+    }
+
+    // The core calculation
+    float result = (voltage_mv * DO_Table[temp_index]) / V_saturation;
+
+    return result;
+}
+
+
+/**
+ * @param voltage - The voltage input.
+ * @param sensor_type - A string representing the sensor type.
+ * @returns The calculated PPM value.
+ */
+float calculate_ppm(float voltage, const char* sensor_type) {
+    const float VC = 3.3;
+    const float RL = 10000.0;
+
+    float RO = 30000.0;
+    float slope = -0.1109;
+    float intercept = 0.0;
+
+    // Calculations using floating-point numbers
+    float calculate_rs = (VC / voltage - 1.0) * RL;
+    float calculate_rs_ro = calculate_rs / RO;
+
+    // Cap the value at 1 if it's greater than or equal to 1
+    if (calculate_rs_ro >= 1.0) {
+        calculate_rs_ro = 1.0;
+    }
+
+    // Use log10f for float-specific base-10 logarithm and powf for power function
+    float log_rs_ro = log10f(calculate_rs_ro);
+    float log_ppm = (log_rs_ro - intercept) / slope;
+    float ppm = powf(10.0, log_ppm);
+
+    return ppm;
 }
