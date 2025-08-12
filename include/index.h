@@ -14,7 +14,7 @@ const char index_html[] PROGMEM = R"rawliteral(
   input[type=submit] { background-color: #007bff; color: white; padding: 14px 20px; margin: 8px 0; border: none; border-radius: 4px; cursor: pointer; width: 100%; font-size: 16px; }
   input[type=submit]:hover { background-color: #0056b3; }
   input[type=submit]:disabled { background-color: #cccccc; }
-  #status, #titleStatus, #intervalStatus { margin-top: 15px; font-size: 1.1em; font-weight: bold; min-height: 20px;}
+  #status, #titleStatus, #intervalStatus, #roStatus, #waterTempStatus { margin-top: 15px; font-size: 1.1em; font-weight: bold; min-height: 20px;}
   .success { color: #28a745; }
   .error { color: #dc3545; }
   hr { border: 0; height: 1px; background: #ddd; margin: 30px 0; }
@@ -41,6 +41,13 @@ const char index_html[] PROGMEM = R"rawliteral(
     <input type="submit" id="intervalButton" value="Update Interval">
   </form>
   <div id="intervalStatus"></div>
+  <hr>
+  <h2>Update Gas Sensor Ro</h2>
+  <form id="roForm">
+    <input type="number" id="newRo" name="ro" placeholder="New Ro value (e.g., 30000)" step="any" required>
+    <input type="submit" id="roButton" value="Update Ro">
+  </form>
+  <div id="roStatus"></div>
   <hr>
   <h2>Update Water Temperature</h2>
   <form id="waterTempForm">
@@ -171,6 +178,40 @@ const char index_html[] PROGMEM = R"rawliteral(
       intervalStatusDiv.className = 'error';
       intervalStatusDiv.textContent = 'Error: Could not update interval.';
       intervalButton.disabled = false;
+    });
+  });
+
+  const roForm = document.getElementById('roForm');
+  const roButton = document.getElementById('roButton');
+  const roStatusDiv = document.getElementById('roStatus');
+
+  roForm.addEventListener('submit', function(e) {
+    e.preventDefault();
+    const newRo = document.getElementById('newRo').value;
+
+    roButton.disabled = true;
+    roStatusDiv.textContent = 'Updating...';
+
+    fetch('/setro', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: 'ro=' + encodeURIComponent(newRo)
+    })
+    .then(response => response.text().then(text => ({ ok: response.ok, text })))
+    .then(({ ok, text }) => {
+      if (ok) {
+        roStatusDiv.className = 'success';
+        roStatusDiv.textContent = text;
+      } else {
+        roStatusDiv.className = 'error';
+        roStatusDiv.textContent = 'Error: ' + text;
+      }
+      roButton.disabled = false;
+    })
+    .catch(error => {
+      roStatusDiv.className = 'error';
+      roStatusDiv.textContent = 'Error: Could not update Ro.';
+      roButton.disabled = false;
     });
   });
 </script>
