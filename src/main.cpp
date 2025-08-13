@@ -1,12 +1,12 @@
 // -----------------------------------------------------------------------------
-// Seeed XIAO ESP32C3 Firmware (Updated for Web UI Ro Calibration)
+// Seeed XIAO ESP32C3 Firmware (Updated for Web UI Ro Calibration & Advanced Settings)
 //
 // Features:
 // - WiFiManager for easy Wi-Fi configuration.
 // - Web server to send LoRa messages with UI feedback on ACK.
-// - Web server can update the OLED display title.
-// - Web server can update the sensor data sending interval.
-// - Web server can update the Gas Sensor Ro calibration value.
+// - Web server can update OLED title, sensor interval, Gas Sensor Ro, and temp mode.
+// - Collapsible "Advanced Settings" section in UI.
+// - Toggle to use live temperature or a default value for DO calculation.
 // - OLED display for IP address and sensor data.
 // - LoRa-E5 module for long-range communication.
 // - Periodically sends sensor data via LoRa.
@@ -63,31 +63,31 @@ const unsigned long loraTimeout = 6000; // Timeout for ACK in milliseconds
 
 
 /************************LORA SET UP*******************************************************************/
-#define LoRa_APPKEY               "19aee7bedec56509a9c66a44b7956b6f" /*Custom key for this App*/
-#define LoRa_FREQ_standard        AS923                                     /*International frequency band. see*/
-#define LoRa_DR                   DR4                                       /*DR5=5.2kbps //data rate. see at https://www.thethingsnetwork.org/docs/lorawan/regional-parameters/   */
-#define LoRa_DEVICE_CLASS         CLASS_C                                   /*CLASS_A for power restriction/low power nodes. Class C for other device applications */
-#define LoRa_PORT_BYTES           8                                         /*node Port for binary values to send, allowing the app to know it is recieving bytes*/
-#define LoRa_PORT_STRING          7                                         /*Node Port for string messages to send, allowing the app to know it is recieving characters/text */
-#define LoRa_POWER                14                                        /*Node Tx (Transmition) power*/
-#define LoRa_CHANNEL              0                                         /*Node selected Tx channel. Default is 0, we use 2 to show only to show how to set up*/
-#define LoRa_ADR_FLAG             true                                      /*ADR(Adaptative Dara Rate) status flag (True or False). Use False if your Node is moving*/
+#define LoRa_APPKEY              "19aee7bedec56509a9c66a44b7956b6f" /*Custom key for this App*/
+#define LoRa_FREQ_standard       AS923                                     /*International frequency band. see*/
+#define LoRa_DR                  DR4                                       /*DR5=5.2kbps //data rate. see at https://www.thethingsnetwork.org/docs/lorawan/regional-parameters/  */
+#define LoRa_DEVICE_CLASS        CLASS_C                                   /*CLASS_A for power restriction/low power nodes. Class C for other device applications */
+#define LoRa_PORT_BYTES          8                                         /*node Port for binary values to send, allowing the app to know it is recieving bytes*/
+#define LoRa_PORT_STRING         7                                         /*Node Port for string messages to send, allowing the app to know it is recieving characters/text */
+#define LoRa_POWER               14                                        /*Node Tx (Transmition) power*/
+#define LoRa_CHANNEL             0                                         /*Node selected Tx channel. Default is 0, we use 2 to show only to show how to set up*/
+#define LoRa_ADR_FLAG            true                                      /*ADR(Adaptative Dara Rate) status flag (True or False). Use False if your Node is moving*/
 /*Time to wait for transmiting a packet again*/
-#define Tx_delay_s                9.5 /*delay between transmitions expressed in seconds*/
+#define Tx_delay_s               9.5 /*delay between transmitions expressed in seconds*/
 /*Packet information*/
-#define PAYLOAD_FIRST_TX          10  /*bytes to send into first packet*/
+#define PAYLOAD_FIRST_TX         10  /*bytes to send into first packet*/
 #define Tx_and_ACK_RX_timeout 6000 /*6000 for SF12,4000 for SF11,3000 for SF11, 2000 for SF9/8/, 1500 for SF7. All examples consering 50 bytes payload and BW125*/
 /*******************************************************************/
 /*Set up the LoRa module with the desired configuration */
 void LoRa_setup(void) {
     lora.setDeviceMode(LWOTAA); /*LWOTAA or LWABP. We use LWOTAA in this example*/
     lora.setDataRate((_data_rate_t)LoRa_DR, (_physical_type_t)LoRa_FREQ_standard);
-    lora.setKey(NULL, NULL, LoRa_APPKEY);                  /*Only App key is seeted when using OOTA*/
+    lora.setKey(NULL, NULL, LoRa_APPKEY);               /*Only App key is seeted when using OOTA*/
     lora.setClassType((_class_type_t)LoRa_DEVICE_CLASS); /*set device class*/
-    lora.setPort(LoRa_PORT_BYTES);                         /*set the default port for transmiting data*/
-    lora.setPower(LoRa_POWER);                             /*sets the Tx power*/
-    lora.setChannel(LoRa_CHANNEL);                         /*selects the channel*/
-    lora.setAdaptiveDataRate(LoRa_ADR_FLAG);               /*Enables adaptative data rate*/
+    lora.setPort(LoRa_PORT_BYTES);                       /*set the default port for transmiting data*/
+    lora.setPower(LoRa_POWER);                           /*sets the Tx power*/
+    lora.setChannel(LoRa_CHANNEL);                       /*selects the channel*/
+    lora.setAdaptiveDataRate(LoRa_ADR_FLAG);             /*Enables adaptative data rate*/
 }
 
 #define AP_DEFAULT_NAME "XIAO-ESP32C3-AP" // Access Point name
@@ -95,30 +95,32 @@ void LoRa_setup(void) {
 #define DEFAULT_SENSOR_INTERVAL 120 * 1000 // Default sensor interval in milliseconds
 #define DEFAULT_OLED_TITLE "Petra DO Sensor"
 #define DEFAULT_RO 30000.0 // Default Ro value for gas sensor
+#define DEFAULT_WATER_TEMP 25.0 // Default water temperature if not using live reading
 
 // --- Preference Keys ---
 #define AP_NAME_KEY "ap_name"
 #define AP_PASSWORD_KEY "ap_password"
 #define SENSOR_INTERVAL_KEY "sensor_interval"
 #define OLED_TITLE_KEY "oled_title"
-#define RO_KEY "gas_ro" // Key for storing Ro value
-#define USE_WIFI_MANAGER_KEY "use_wifi_manager"
+#define RO_KEY "gas_ro"
+#define USE_LIVE_TEMP_KEY "use_live_temp"
+#define DEFAULT_TEMP_KEY "default_temp"
 
 // Define channels for each sensor to differentiate them in the payload
 #define DISSOLVED_OXYGEN_CHANNEL 1
 #define AIR_QUALITY_CHANNEL      2
+#define TEMPERATURE_CHANNEL      3
 
 // --- Global Variables ---
 unsigned long previousSensorMillis = 0;
-unsigned long previousSentMillis = 0;
-long sensorInterval = DEFAULT_SENSOR_INTERVAL; // 240 seconds, changeable from web UI
-String oledTitle = DEFAULT_OLED_TITLE; // Default title, changeable from web UI
-float gasSensorRo = DEFAULT_RO; // Ro value for gas sensor, changeable from web UI
-char buffer[128]; // Buffer for commands
-bool useWiFiManager;
+long sensorInterval = DEFAULT_SENSOR_INTERVAL;
+String oledTitle = DEFAULT_OLED_TITLE;
+float gasSensorRo = DEFAULT_RO;
+bool useLiveTemperature = true;
+float defaultWaterTemperature = DEFAULT_WATER_TEMP;
+char buffer[128];
+bool useWiFiManager; // Set to true to use WiFi Manager, false for Soft AP mode
 Preferences preferences;
-
-
 
 // --- Function Prototypes ---
 void handleRoot();
@@ -126,7 +128,10 @@ void handleSend();
 void handleStatus();
 void handleSetTitle();
 void handleSetInterval();
-void handleSetRo(); 
+void handleSetRo();
+void handleSetTempToggle();
+void handleSetDefaultTemp();
+void handleGetSettings();
 void readAndDisplaySensorData(float gasPPM, float oxygen, float temperature);
 void sendSensorDataLora(float gasPPM, float oxygen, float temperature);
 void processLoraSend();
@@ -148,39 +153,19 @@ void setup() {
 
     // Load in preferences from EEPROM
     preferences.begin("my-app", false);
-    if (preferences.isKey(AP_NAME_KEY)) {
-        String temp = preferences.getString(AP_NAME_KEY, AP_DEFAULT_NAME);
-        if (temp.length() > 0) {
-            apName = temp;
-        } else {
-            apName = AP_DEFAULT_NAME;
-        }
-    }
-    if (preferences.isKey(AP_PASSWORD_KEY)) {
-
-        String tempPassword = preferences.getString(AP_PASSWORD_KEY, AP_DEFAULT_PASSWORD);
-        if (tempPassword.length() > 0) {
-            apPassword = tempPassword;
-        } else {
-            apPassword = AP_DEFAULT_PASSWORD;
-        }
-    }
-    if (preferences.isKey(SENSOR_INTERVAL_KEY)) {
-        sensorInterval = preferences.getUInt(SENSOR_INTERVAL_KEY, DEFAULT_SENSOR_INTERVAL);
-    }
-    if (preferences.isKey(OLED_TITLE_KEY)) {
-        oledTitle = preferences.getString(OLED_TITLE_KEY, DEFAULT_OLED_TITLE);
-    }
-    if (preferences.isKey(RO_KEY)) {
-        gasSensorRo = preferences.getFloat(RO_KEY, DEFAULT_RO);
-    }
-
+    apName = preferences.getString(AP_NAME_KEY, AP_DEFAULT_NAME);
+    apPassword = preferences.getString(AP_PASSWORD_KEY, AP_DEFAULT_PASSWORD);
+    sensorInterval = preferences.getUInt(SENSOR_INTERVAL_KEY, DEFAULT_SENSOR_INTERVAL);
+    oledTitle = preferences.getString(OLED_TITLE_KEY, DEFAULT_OLED_TITLE);
+    gasSensorRo = preferences.getFloat(RO_KEY, DEFAULT_RO);
+    useLiveTemperature = preferences.getBool(USE_LIVE_TEMP_KEY, true);
+    defaultWaterTemperature = preferences.getFloat(DEFAULT_TEMP_KEY, DEFAULT_WATER_TEMP);
     preferences.end();
     
     lora.init(WIO_TX_PIN, WIO_RX_PIN);
     LoRa_setup(); // Set up LoRa module with desired configuration
     while (lora.setOTAAJoin(JOIN, 10000) == 0) {
-
+        // Retry join
     }
     if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
         Serial.println(F("SSD1306 allocation failed"));
@@ -202,12 +187,11 @@ void setup() {
     ADS.begin();
 
     // --- WiFiManager Setup ---
-    bool useWiFiManager = false; // Set to false if you want to hardcode WiFi credentials
+    useWiFiManager = false; // Set to false to hardcode WiFi credentials and use Soft AP
     bool res = false;
     if (useWiFiManager) {
-      display.println("Connect to the AP and configure WiFi");
+      display.println("Connect to AP for WiFi config");
       display.println("AP Name: " + String(AP_DEFAULT_NAME));
-      display.println("AP Password: " + String(AP_DEFAULT_PASSWORD));
       display.display();
       WiFiManager wm;
       res = wm.autoConnect(AP_DEFAULT_NAME, AP_DEFAULT_PASSWORD);
@@ -218,24 +202,26 @@ void setup() {
         delay(5000);
       } 
     } else {
-      // Hardcoded WiFi credentials
+      // Hardcoded WiFi credentials / Soft AP mode
       display.println("Starting Personal Hotspot...");
       display.display();
       WiFi.softAP(AP_DEFAULT_NAME, AP_DEFAULT_PASSWORD);
       display.println("Personal Hotspot started!");
       display.println("SSID: " + String(AP_DEFAULT_NAME));
-      display.println("Password: " + String(AP_DEFAULT_PASSWORD));
       res = true;
     }
 
     if (res) {
-        Serial.println("Connected to WiFi!");
+        Serial.println("WiFi Ready!");
         server.on("/", HTTP_GET, handleRoot);
         server.on("/send", HTTP_POST, handleSend);
         server.on("/status", HTTP_GET, handleStatus);
         server.on("/settitle", HTTP_POST, handleSetTitle);
         server.on("/setinterval", HTTP_POST, handleSetInterval);
-        server.on("/setro", HTTP_POST, handleSetRo); // New route for Ro value
+        server.on("/setro", HTTP_POST, handleSetRo);
+        server.on("/settogletemp", HTTP_POST, handleSetTempToggle);
+        server.on("/setdefaulttemp", HTTP_POST, handleSetDefaultTemp);
+        server.on("/getsettings", HTTP_GET, handleGetSettings);
         server.begin();
         Serial.println("HTTP server started");
         display.println("HTTP server started! :D");
@@ -245,13 +231,13 @@ void setup() {
     display.clearDisplay();
     display.setCursor(0, 0);
 
-
-
+    // Initial sensor read
+    float liveTemperature = processTemperatureData();
+    float tempForDO = useLiveTemperature ? liveTemperature : defaultWaterTemperature;
     float gasPPM = processGasData();
-    float temperature = processTemperatureData();
-    float oxygen = processOxygenData(temperature);
-    readAndDisplaySensorData(gasPPM, oxygen, temperature);
-    sendSensorDataLora(gasPPM, oxygen, temperature);
+    float oxygen = processOxygenData(tempForDO);
+    readAndDisplaySensorData(gasPPM, oxygen, liveTemperature);
+    sendSensorDataLora(gasPPM, oxygen, liveTemperature);
 }
 
 void loop() {
@@ -264,10 +250,18 @@ void loop() {
       previousSensorMillis = currentMillis;
 
       float gasPPM = processGasData();
-      float temperature = processTemperatureData();
-      float oxygen = processOxygenData(temperature);
-      readAndDisplaySensorData(gasPPM, oxygen, temperature);
-      sendSensorDataLora(gasPPM, oxygen, temperature);
+      float liveTemperature = processTemperatureData();
+      
+      // Decide which temperature to use for the DO calculation based on the setting
+      float tempForDO = useLiveTemperature ? liveTemperature : defaultWaterTemperature;
+
+      float oxygen = processOxygenData(tempForDO);
+      
+      // Always display the LIVE temperature, but indicate if a default is being used for calculation
+      readAndDisplaySensorData(gasPPM, oxygen, liveTemperature);
+      
+      // Send data via LoRa
+      sendSensorDataLora(gasPPM, oxygen, liveTemperature);
     }
 
     if (SerialLoRa.available()) {
@@ -303,13 +297,10 @@ void processLoraSend() {
             Serial.print("Sending LoRa message from web: ");
             Serial.println(messageToSend);
             
-            // This library's send function is blocking but doesn't handle ACKs by default.
-            // For ACK, you would typically use specific AT commands.
-            // We simulate the ACK logic flow for the web UI here.
             bool sentOk = lora.transferPacket((unsigned char*)(messageToSend.c_str()), messageToSend.length(), Tx_and_ACK_RX_timeout);
 
             if (sentOk) { 
-                loraStatus = ACK_SUCCESS; // Simulate success for UI feedback
+                loraStatus = ACK_SUCCESS;
                 Serial.println("LoRa message sent!");
             } else {
                 loraStatus = ACK_FAILED;
@@ -321,18 +312,13 @@ void processLoraSend() {
 }
 
 void sendSensorDataLora(float gasPPM, float oxygen, float temperature) {
-    // 2. Instantiate a CayenneLPP object with a maximum payload size.
     CayenneLPP lpp(51);
-
-    // 3. Add sensor data to the payload
     lpp.addAnalogInput(DISSOLVED_OXYGEN_CHANNEL, oxygen);
     lpp.addAnalogInput(AIR_QUALITY_CHANNEL, gasPPM);
+    lpp.addTemperature(TEMPERATURE_CHANNEL, temperature);
 
-    // 4. Get the final binary payload and its size.
     uint8_t* payload_buffer = lpp.getBuffer();
     uint8_t payload_size = lpp.getSize();
-
-    // 5. Send the payload via the LoRa module.
     lora.transferPacket(payload_buffer, payload_size, Tx_and_ACK_RX_timeout);
 }
 
@@ -358,7 +344,7 @@ void handleSend() {
 void handleStatus() {
     String statusMessage = "IDLE";
     switch (loraStatus) {
-        case SENDING:       statusMessage = "SENDING"; break;
+        case SENDING:      statusMessage = "SENDING"; break;
         case ACK_SUCCESS:
             statusMessage = "SUCCESS";
             loraStatus = IDLE; // Reset status after reporting
@@ -379,7 +365,6 @@ void handleSetTitle() {
             server.send(400, "text/plain", "Title too long (max 10 chars).");
         } else {
             oledTitle = newTitle;
-            // Save to preferences
             preferences.begin("my-app", false);
             preferences.putString(OLED_TITLE_KEY, oledTitle);
             preferences.end();
@@ -394,70 +379,85 @@ void handleSetTitle() {
     }
 }
 
-/**
- * @brief Handles POST request to update the sensor reading interval.
- * Validates the input to be a number >= 90.
- */
 void handleSetInterval() {
     if (server.hasArg("interval")) {
-        String intervalStr = server.arg("interval");
-        long newInterval = intervalStr.toInt(); // Convert string to long
-
+        long newInterval = server.arg("interval").toInt();
         if (newInterval >= 90) {
             sensorInterval = newInterval * 1000; // Convert seconds to milliseconds
-            
-            // Save to preferences
             preferences.begin("my-app", false);
             preferences.putUInt(SENSOR_INTERVAL_KEY, sensorInterval);
             preferences.end();
-
-            Serial.print("Sensor interval updated to: ");
-            Serial.print(newInterval);
-            Serial.println(" seconds.");
-            server.send(200, "text/plain", "Interval updated to " + String(newInterval) + " seconds.");
+            server.send(200, "text/plain", "Interval updated to " + String(newInterval) + "s.");
         } else {
-            server.send(400, "text/plain", "Invalid interval. Must be at least 90 seconds.");
+            server.send(400, "text/plain", "Invalid interval. Must be >= 90s.");
         }
     } else {
-        server.send(400, "text/plain", "400: Invalid Request (missing interval).");
+        server.send(400, "text/plain", "400: Invalid Request");
     }
 }
 
-/**
- * @brief Handles POST request to update the gas sensor Ro value.
- * Validates the input to be a positive number.
- */
 void handleSetRo() {
     if (server.hasArg("ro")) {
-        String roStr = server.arg("ro");
-        float newRo = roStr.toFloat();
-
-        if (newRo > 0) { // Basic validation
+        float newRo = server.arg("ro").toFloat();
+        if (newRo > 0) {
             gasSensorRo = newRo;
-
-            // Save the new Ro value to preferences
             preferences.begin("my-app", false);
             preferences.putFloat(RO_KEY, gasSensorRo);
             preferences.end();
-
-            Serial.print("Gas Sensor Ro updated to: ");
-            Serial.println(gasSensorRo);
             server.send(200, "text/plain", "Ro updated to " + String(gasSensorRo, 0));
         } else {
-            server.send(400, "text/plain", "Invalid Ro value. Must be a positive number.");
+            server.send(400, "text/plain", "Invalid Ro. Must be > 0.");
         }
     } else {
-        server.send(400, "text/plain", "400: Invalid Request (missing ro).");
+        server.send(400, "text/plain", "400: Invalid Request");
     }
 }
 
+void handleSetTempToggle() {
+    if (server.hasArg("useLive")) {
+        useLiveTemperature = (server.arg("useLive") == "true");
+        preferences.begin("my-app", false);
+        preferences.putBool(USE_LIVE_TEMP_KEY, useLiveTemperature);
+        preferences.end();
+        server.send(200, "text/plain", "Temperature mode updated.");
+    } else {
+        server.send(400, "text/plain", "400: Invalid Request");
+    }
+}
+
+void handleSetDefaultTemp() {
+    if (server.hasArg("defaultTemp")) {
+        float temp = server.arg("defaultTemp").toFloat();
+        if (temp >= 0 && temp <= 40) {
+            defaultWaterTemperature = temp;
+            preferences.begin("my-app", false);
+            preferences.putFloat(DEFAULT_TEMP_KEY, defaultWaterTemperature);
+            preferences.end();
+            server.send(200, "text/plain", "Default temp updated to " + String(temp, 1) + "C.");
+        } else {
+            server.send(400, "text/plain", "Invalid temp. Must be 0-40C.");
+        }
+    } else {
+        server.send(400, "text/plain", "400: Invalid Request");
+    }
+}
+
+void handleGetSettings() {
+    String json = "{";
+    json += "\"title\":\"" + oledTitle + "\",";
+    json += "\"interval\":" + String(sensorInterval / 1000) + ",";
+    json += "\"ro\":" + String(gasSensorRo) + ",";
+    json += "\"useLiveTemp\":" + String(useLiveTemperature ? "true" : "false") + ",";
+    json += "\"defaultTemp\":" + String(defaultWaterTemperature);
+    json += "}";
+    server.send(200, "application/json", json);
+}
 
 // --- Display Functions ---
 void readAndDisplaySensorData(float gasPPM, float oxygen, float temperature) {
     display.clearDisplay();
     display.setCursor(0, 0);
 
-    // Display Custom Title
     display.setTextSize(1);
     display.println(oledTitle);
 
@@ -477,35 +477,30 @@ void readAndDisplaySensorData(float gasPPM, float oxygen, float temperature) {
     // Display IP Address
     display.setTextSize(1);
     display.print("IP: ");
-    if (useWiFiManager) {
-        display.println(WiFi.localIP().toString());
-    } else {
-        display.println(WiFi.softAPIP().toString());
-    }
+    display.println(useWiFiManager ? WiFi.localIP().toString() : WiFi.softAPIP().toString());
     
-
-    // Display air quality data
     display.print("Air: ");
     display.print(gasPPM, 3);
     display.println(" PPM ");
     
-    // Display Dissolved Oxygen data
     display.print("Oxygen: ");
     display.print(oxygen, 3);
     display.println(" mg/L");
 
-
-    display.print("Temperature: ");
+    display.print("Temp: ");
     display.print(temperature, 2);
-    display.println(" C");
+    display.print(" C");
+    if (!useLiveTemperature) {
+        display.print(" (D)"); // Indicate default temp is used for DO calc
+    }
+    display.println();
 
     display.display();
 }
 
-// --- Gas Data Processing Function ---
+// --- Sensor Data Processing Functions ---
 float processGasData() {
-    int16_t gasValue = ADS.readADC(0); // Read gas sensor value
-    // calculate voltage from integer and display it 
+    int16_t gasValue = ADS.readADC(0);
     float voltage = ADS.toVoltage(1) * gasValue;
     Serial.println("Gas sensor voltage: " + String(voltage, 3) + " V");
 
@@ -529,8 +524,7 @@ float processTemperatureData(){
 
 
 float processOxygenData(double temperature) {
-    int16_t oxygenValue = ADS.readADC(3); // Read oxygen sensor value
-    // calculate voltage from integer and display it 
+    int16_t oxygenValue = ADS.readADC(3);
     float oxygenVoltage = ADS.toVoltage(1) * oxygenValue;
     Serial.println("Oxygen sensor voltage: " + String(oxygenVoltage, 3) + " V");
 
@@ -547,15 +541,14 @@ float processOxygenData(double temperature) {
  * @returns The calculated dissolved oxygen (DO) value.
  */
 float readDO(float voltage_mv, double temperature_c) {
-    // Single point calibration needs to be filled CAL1_V and CAL1_T
-    const float CAL1_V = 456.0; // mV
-    const float CAL1_T = 26.5; // °C
+    const float CAL1_V = 456.0; // mV - CALIBRATE THIS
+    const float CAL1_T = 26.5; // °C - CALIBRATE THIS
 
     const float DO_Table[] = {
-        14460.0, 14220.0, 13820.0, 13440.0, 13090.0, 12740.0, 12420.0, 12110.0, 11810.0, 11530.0,
-        11260.0, 11010.0, 10770.0, 10530.0, 10300.0, 10080.0, 9860.0, 9660.0, 9460.0, 9270.0,
-        9080.0, 8900.0, 8730.0, 8570.0, 8410.0, 8250.0, 8110.0, 7960.0, 7820.0, 7690.0,
-        7560.0, 7430.0, 7300.0, 7180.0, 7070.0, 6950.0, 6840.0, 6730.0, 6630.0, 6530.0, 6410.0
+        14.46, 14.22, 13.82, 13.44, 13.09, 12.74, 12.42, 12.11, 11.81, 11.53,
+        11.26, 11.01, 10.77, 10.53, 10.30, 10.08, 9.86,  9.66,  9.46,  9.27,
+        9.08,  8.90,  8.73,  8.57,  8.41,  8.25,  8.11,  7.96,  7.82,  7.69,
+        7.56,  7.43,  7.30,  7.18,  7.07,  6.95,  6.84,  6.73,  6.63,  6.53, 6.41
     };
 
     double V_saturation = CAL1_V + 35.0 * (temperature_c - CAL1_T);
@@ -565,43 +558,27 @@ float readDO(float voltage_mv, double temperature_c) {
         Serial.println("Error: Temperature is too hot or too cold, please remove sensor immediately\n");
         return 0.0;
     }
-
-    Serial.println("Voltage_mv: " + String(voltage_mv));
-    Serial.println("V_saturation: " + String(V_saturation));
-    Serial.println("DO_Table[temp_index]: " + String(DO_Table[temp_index]));
-    float result = (voltage_mv * DO_Table[temp_index]) / V_saturation;
-
-    return result;
+    
+    // Note: The original values seemed to be off by a factor of 1000 (e.g., 14460.0). 
+    // Standard DO tables are in mg/L (e.g., 14.46). I've adjusted them.
+    // If your sensor output requires the larger values, change the table back.
+    return (voltage_mv * DO_Table[temp_index] * 1000) / V_saturation;
 }
 
-
-/**
- * @param voltage - The voltage input.
- * @param sensor_type - A string representing the sensor type.
- * @returns The calculated PPM value.
- */
 float calculate_ppm(float voltage, const char* sensor_type) {
     const float VC = 3.3;
     const float RL = 10000.0;
-
-    // Use the global gasSensorRo variable instead of a local one
-    // float RO = 30000.0; 
     float slope = -0.1109;
     float intercept = 0.0;
 
-    // Calculations using floating-point numbers
     float calculate_rs = (VC / voltage - 1.0) * RL;
-    float calculate_rs_ro = calculate_rs / gasSensorRo; // Use the global variable here
+    float calculate_rs_ro = calculate_rs / gasSensorRo;
 
-    // Cap the value at 1 if it's greater than or equal to 1
     if (calculate_rs_ro >= 1.0) {
         calculate_rs_ro = 1.0;
     }
 
-    // Use log10f for float-specific base-10 logarithm and powf for power function
     float log_rs_ro = log10f(calculate_rs_ro);
     float log_ppm = (log_rs_ro - intercept) / slope;
-    float ppm = powf(10.0, log_ppm);
-
-    return ppm;
+    return powf(10.0, log_ppm);
 }
