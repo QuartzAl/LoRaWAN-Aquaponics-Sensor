@@ -43,6 +43,13 @@
 #define OLED_RESET -1    // Reset pin # (or -1 if sharing Arduino reset pin)
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 
+
+// --- NTC Thermistor Object Configuration ---
+#define R0 10000.0
+#define Tn 25 // nominal temperature in Celsius
+#define BETA 3950.0
+#define KELVIN_CONVERSION 273.15
+
 // --- Object Instantiation ---
 WebServer server(80);
 ADS1115 ADS(0x48);
@@ -124,10 +131,10 @@ void readAndDisplaySensorData(float gasPPM, float oxygen, float temperature);
 void sendSensorDataLora(float gasPPM, float oxygen, float temperature);
 void processLoraSend();
 float processGasData();
-float processOxygenData(float temperature);
+float processOxygenData(double temperature);
 float processTemperatureData();
 float calculate_ppm(float voltage, const char* sensor_type);
-float readDO(float voltage_mv, float temperature_c);
+float readDO(float voltage_mv, double temperature_c);
 
 void setup() {
     Serial.begin(115200);
@@ -489,8 +496,8 @@ void readAndDisplaySensorData(float gasPPM, float oxygen, float temperature) {
 
 
     display.print("Temperature: ");
-    display.print(temperature, 3);
-    display.println(" °C");
+    display.print(temperature, 2);
+    display.println(" C");
 
     display.display();
 }
@@ -512,22 +519,22 @@ float processGasData() {
 float processTemperatureData(){
     int16_t temperatureValue = ADS.readADC(1); // Read temperature sensor value
     float temperatureVoltage = ADS.toVoltage(1) * temperatureValue;
-    float temperatureResistance = ((10000 * 3.3) / temperatureVoltage - 10000);
-    float temperature = 1 / (1/298.15 + (1 / 3950) * log(temperatureResistance / 10000)); - 273.15;
+    double temperatureResistance = (double)((3.3) / temperatureVoltage - 1.0) * 10000.0;
+    double temperature = (1.0 / (1.0 / (Tn + KELVIN_CONVERSION) + log(temperatureResistance / R0) / BETA)) - KELVIN_CONVERSION;
     Serial.println("Thermistor Resistance: " + String(temperatureResistance, 2) + " Ω");
-    Serial.println("Temperature: " + String(temperature, 2) + " °C");
+    Serial.println("Temperature: " + String(temperature, 2) + " C");
 
     return temperature;
 }
 
 
-float processOxygenData(float temperature) {
+float processOxygenData(double temperature) {
     int16_t oxygenValue = ADS.readADC(3); // Read oxygen sensor value
     // calculate voltage from integer and display it 
     float oxygenVoltage = ADS.toVoltage(1) * oxygenValue;
     Serial.println("Oxygen sensor voltage: " + String(oxygenVoltage, 3) + " V");
 
-    float oxygen = readDO(oxygen, temperature);
+    float oxygen = readDO(oxygenVoltage, temperature);
     Serial.println("Dissolved Oxygen: " + String(oxygen, 2) + " mg/L");
 
     return oxygen;
@@ -539,10 +546,10 @@ float processOxygenData(float temperature) {
  * @param temperature_c - The temperature in degrees Celsius.
  * @returns The calculated dissolved oxygen (DO) value.
  */
-float readDO(float voltage_mv, float temperature_c) {
+float readDO(float voltage_mv, double temperature_c) {
     // Single point calibration needs to be filled CAL1_V and CAL1_T
-    const float CAL1_V = 340.0; // mV
-    const float CAL1_T = 26.2; // °C
+    const float CAL1_V = 456.0; // mV
+    const float CAL1_T = 26.5; // °C
 
     const float DO_Table[] = {
         14460.0, 14220.0, 13820.0, 13440.0, 13090.0, 12740.0, 12420.0, 12110.0, 11810.0, 11530.0,
@@ -551,7 +558,7 @@ float readDO(float voltage_mv, float temperature_c) {
         7560.0, 7430.0, 7300.0, 7180.0, 7070.0, 6950.0, 6840.0, 6730.0, 6630.0, 6530.0, 6410.0
     };
 
-    float V_saturation = CAL1_V + 35.0 * (temperature_c - CAL1_T);
+    double V_saturation = CAL1_V + 35.0 * (temperature_c - CAL1_T);
 
     int temp_index = (int)temperature_c;
     if (temp_index < 0 || temp_index >= sizeof(DO_Table) / sizeof(DO_Table[0])) {
@@ -559,6 +566,9 @@ float readDO(float voltage_mv, float temperature_c) {
         return 0.0;
     }
 
+    Serial.println("Voltage_mv: " + String(voltage_mv));
+    Serial.println("V_saturation: " + String(V_saturation));
+    Serial.println("DO_Table[temp_index]: " + String(DO_Table[temp_index]));
     float result = (voltage_mv * DO_Table[temp_index]) / V_saturation;
 
     return result;
