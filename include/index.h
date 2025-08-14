@@ -34,7 +34,7 @@ const char index_html[] PROGMEM = R"rawliteral(
   <hr>
   <h2>Update Display Title</h2>
   <form id="titleForm">
-    <input type="text" id="newTitle" name="title" placeholder="New title (max 10 chars)" maxlength="10" required>
+    <input type="text" id="newTitle" name="title" placeholder="New title (max 20 chars)" maxlength="20" required>
     <input type="submit" id="titleButton" value="Update Title">
   </form>
   <div id="titleStatus" class="status"></div>
