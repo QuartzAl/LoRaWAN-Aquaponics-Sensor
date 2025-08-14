@@ -37,6 +37,12 @@
 #define WIO_TX_PIN 21
 #define RECEIVE_WINDOW 1000 // Timeout for receiving packets in milliseconds
 
+// --- ADS1115 Pin Definitions ---
+#define ADC_TEMP_PIN 0
+#define ADC_GAS_PIN 1
+#define ADC_BATT_PIN 2
+#define ADC_OXYGEN_PIN 3
+
 // --- OLED Display Configuration ---
 #define SCREEN_WIDTH 128 // OLED display width, in pixels
 #define SCREEN_HEIGHT 64 // OLED display height, in pixels
@@ -93,6 +99,7 @@ void LoRa_setup(void) {
 #define AP_DEFAULT_NAME "XIAO-ESP32C3-AP" // Access Point name
 #define AP_DEFAULT_PASSWORD "Access@Sensor" // Access Point password
 #define DEFAULT_SENSOR_INTERVAL 120 * 1000 // Default sensor interval in milliseconds
+#define DEFAULT_DISPLAY_INTERVAL 5000
 #define DEFAULT_OLED_TITLE "Petra DO Sensor"
 #define DEFAULT_RO 30000.0 // Default Ro value for gas sensor
 #define DEFAULT_WATER_TEMP 25.0 // Default water temperature if not using live reading
@@ -105,15 +112,19 @@ void LoRa_setup(void) {
 #define RO_KEY "gas_ro"
 #define USE_LIVE_TEMP_KEY "use_live_temp"
 #define DEFAULT_TEMP_KEY "default_temp"
+#define DISPLAY_INTERVAL_KEY "display_interval"
 
 // Define channels for each sensor to differentiate them in the payload
 #define DISSOLVED_OXYGEN_CHANNEL 1
 #define AIR_QUALITY_CHANNEL      2
 #define TEMPERATURE_CHANNEL      3
+#define BATTERY_CHANNEL          4
 
 // --- Global Variables ---
 unsigned long previousSensorMillis = 0;
-long sensorInterval = DEFAULT_SENSOR_INTERVAL;
+unsigned long previousDisplayMillis = 0;
+long sendInterval = DEFAULT_SENSOR_INTERVAL;
+long displayInterval = DEFAULT_DISPLAY_INTERVAL;
 String oledTitle = DEFAULT_OLED_TITLE;
 float gasSensorRo = DEFAULT_RO;
 bool useLiveTemperature = true;
@@ -132,12 +143,13 @@ void handleSetRo();
 void handleSetTempToggle();
 void handleSetDefaultTemp();
 void handleGetSettings();
-void readAndDisplaySensorData(float gasPPM, float oxygen, float temperature);
-void sendSensorDataLora(float gasPPM, float oxygen, float temperature);
+void displaySensorData(float gasPPM, float oxygen, float temperature, float batteryPercentage);
+void sendSensorDataLora(float gasPPM, float oxygen, float temperature, float batteryPercentage);
 void processLoraSend();
 float processGasData();
 float processOxygenData(double temperature);
-float processTemperatureData();
+float processWaterTempData();
+float processBatteryPercentage();
 float calculate_ppm(float voltage, const char* sensor_type);
 float readDO(float voltage_mv, double temperature_c);
 
@@ -155,7 +167,8 @@ void setup() {
     preferences.begin("my-app", false);
     apName = preferences.getString(AP_NAME_KEY, AP_DEFAULT_NAME);
     apPassword = preferences.getString(AP_PASSWORD_KEY, AP_DEFAULT_PASSWORD);
-    sensorInterval = preferences.getUInt(SENSOR_INTERVAL_KEY, DEFAULT_SENSOR_INTERVAL);
+    sendInterval = preferences.getUInt(SENSOR_INTERVAL_KEY, DEFAULT_SENSOR_INTERVAL);
+    displayInterval = preferences.getUInt(DISPLAY_INTERVAL_KEY, DEFAULT_DISPLAY_INTERVAL);
     oledTitle = preferences.getString(OLED_TITLE_KEY, DEFAULT_OLED_TITLE);
     gasSensorRo = preferences.getFloat(RO_KEY, DEFAULT_RO);
     useLiveTemperature = preferences.getBool(USE_LIVE_TEMP_KEY, true);
@@ -232,12 +245,13 @@ void setup() {
     display.setCursor(0, 0);
 
     // Initial sensor read
-    float liveTemperature = processTemperatureData();
+    float liveTemperature = processWaterTempData();
     float tempForDO = useLiveTemperature ? liveTemperature : defaultWaterTemperature;
     float gasPPM = processGasData();
     float oxygen = processOxygenData(tempForDO);
-    readAndDisplaySensorData(gasPPM, oxygen, liveTemperature);
-    sendSensorDataLora(gasPPM, oxygen, liveTemperature);
+    float batteryPercentage = processBatteryPercentage();
+    displaySensorData(gasPPM, oxygen, liveTemperature, batteryPercentage);
+    sendSensorDataLora(gasPPM, oxygen, liveTemperature, batteryPercentage);
 }
 
 void loop() {
@@ -246,22 +260,27 @@ void loop() {
     ADS.setGain(ADS1X15_GAIN_2048MV);
 
     unsigned long currentMillis = millis();
-    if (currentMillis - previousSensorMillis >= sensorInterval) {
+    if (currentMillis - previousSensorMillis >= sendInterval) {
       previousSensorMillis = currentMillis;
 
       float gasPPM = processGasData();
-      float liveTemperature = processTemperatureData();
-      
-      // Decide which temperature to use for the DO calculation based on the setting
+      float liveTemperature = processWaterTempData();
       float tempForDO = useLiveTemperature ? liveTemperature : defaultWaterTemperature;
-
       float oxygen = processOxygenData(tempForDO);
-      
-      // Always display the LIVE temperature, but indicate if a default is being used for calculation
-      readAndDisplaySensorData(gasPPM, oxygen, liveTemperature);
-      
-      // Send data via LoRa
-      sendSensorDataLora(gasPPM, oxygen, liveTemperature);
+      float batteryPercentage = processBatteryPercentage();
+
+      sendSensorDataLora(gasPPM, oxygen, liveTemperature, batteryPercentage);
+    }
+
+    if (currentMillis - previousDisplayMillis >= displayInterval) {
+      previousDisplayMillis = currentMillis;
+
+      float gasPPM = processGasData();
+      float liveTemperature = processWaterTempData();
+      float tempForDO = useLiveTemperature ? liveTemperature : defaultWaterTemperature;
+      float oxygen = processOxygenData(tempForDO);
+      float batteryPercentage = processBatteryPercentage();
+      displaySensorData(gasPPM, oxygen, liveTemperature, batteryPercentage);
     }
 
     if (SerialLoRa.available()) {
@@ -311,11 +330,12 @@ void processLoraSend() {
     }
 }
 
-void sendSensorDataLora(float gasPPM, float oxygen, float temperature) {
+void sendSensorDataLora(float gasPPM, float oxygen, float temperature, float batteryPercentage) {
     CayenneLPP lpp(51);
     lpp.addAnalogInput(DISSOLVED_OXYGEN_CHANNEL, oxygen);
     lpp.addAnalogInput(AIR_QUALITY_CHANNEL, gasPPM);
     lpp.addTemperature(TEMPERATURE_CHANNEL, temperature);
+    lpp.addAnalogInput(BATTERY_CHANNEL, batteryPercentage);
 
     uint8_t* payload_buffer = lpp.getBuffer();
     uint8_t payload_size = lpp.getSize();
@@ -369,9 +389,10 @@ void handleSetTitle() {
             preferences.putString(OLED_TITLE_KEY, oledTitle);
             preferences.end();
             float gasPPM = processGasData();
-            float temperature = processTemperatureData();
+            float temperature = processWaterTempData();
             float oxygen = processOxygenData(temperature);
-            readAndDisplaySensorData(gasPPM, oxygen, temperature);
+            float batteryPercentage = processBatteryPercentage();
+            displaySensorData(gasPPM, oxygen, temperature, batteryPercentage);
             server.send(200, "text/plain", "Title updated successfully!");
         }
     } else {
@@ -383,9 +404,9 @@ void handleSetInterval() {
     if (server.hasArg("interval")) {
         long newInterval = server.arg("interval").toInt();
         if (newInterval >= 90) {
-            sensorInterval = newInterval * 1000; // Convert seconds to milliseconds
+            sendInterval = newInterval * 1000; // Convert seconds to milliseconds
             preferences.begin("my-app", false);
-            preferences.putUInt(SENSOR_INTERVAL_KEY, sensorInterval);
+            preferences.putUInt(SENSOR_INTERVAL_KEY, sendInterval);
             preferences.end();
             server.send(200, "text/plain", "Interval updated to " + String(newInterval) + "s.");
         } else {
@@ -445,7 +466,7 @@ void handleSetDefaultTemp() {
 void handleGetSettings() {
     String json = "{";
     json += "\"title\":\"" + oledTitle + "\",";
-    json += "\"interval\":" + String(sensorInterval / 1000) + ",";
+    json += "\"interval\":" + String(sendInterval / 1000) + ",";
     json += "\"ro\":" + String(gasSensorRo) + ",";
     json += "\"useLiveTemp\":" + String(useLiveTemperature ? "true" : "false") + ",";
     json += "\"defaultTemp\":" + String(defaultWaterTemperature);
@@ -454,7 +475,7 @@ void handleGetSettings() {
 }
 
 // --- Display Functions ---
-void readAndDisplaySensorData(float gasPPM, float oxygen, float temperature) {
+void displaySensorData(float gasPPM, float oxygen, float temperature, float batteryPercentage) {
     display.clearDisplay();
     display.setCursor(0, 0);
 
@@ -490,17 +511,21 @@ void readAndDisplaySensorData(float gasPPM, float oxygen, float temperature) {
     display.print("Temp: ");
     display.print(temperature, 2);
     display.print(" C");
-    if (!useLiveTemperature) {
+    if (useLiveTemperature) {
         display.print(" (D)"); // Indicate default temp is used for DO calc
     }
     display.println();
+
+    display.print("Battery: ");
+    display.print(batteryPercentage, 1);
+    display.println(" %");
 
     display.display();
 }
 
 // --- Sensor Data Processing Functions ---
 float processGasData() {
-    int16_t gasValue = ADS.readADC(0);
+    int16_t gasValue = ADS.readADC(ADC_GAS_PIN);
     float voltage = ADS.toVoltage(1) * gasValue;
     Serial.println("Gas sensor voltage: " + String(voltage, 3) + " V");
 
@@ -511,8 +536,8 @@ float processGasData() {
     return ppm;
 }
 
-float processTemperatureData(){
-    int16_t temperatureValue = ADS.readADC(1); // Read temperature sensor value
+float processWaterTempData(){
+    int16_t temperatureValue = ADS.readADC(ADC_TEMP_PIN); // Read temperature sensor value
     float temperatureVoltage = ADS.toVoltage(1) * temperatureValue;
     double temperatureResistance = (double)((3.3) / temperatureVoltage - 1.0) * 10000.0;
     double temperature = (1.0 / (1.0 / (Tn + KELVIN_CONVERSION) + log(temperatureResistance / R0) / BETA)) - KELVIN_CONVERSION;
@@ -524,7 +549,7 @@ float processTemperatureData(){
 
 
 float processOxygenData(double temperature) {
-    int16_t oxygenValue = ADS.readADC(3);
+    int16_t oxygenValue = ADS.readADC(ADC_OXYGEN_PIN);
     float oxygenVoltage = ADS.toVoltage(1) * oxygenValue;
     Serial.println("Oxygen sensor voltage: " + String(oxygenVoltage, 3) + " V");
 
@@ -534,6 +559,15 @@ float processOxygenData(double temperature) {
     return oxygen;
 }
 
+float processBatteryPercentage(){
+    int16_t battValue = ADS.readADC(ADC_BATT_PIN);
+    float batteryVoltage = ADS.toVoltage(1) * battValue * 2; // multiplied by 2 because it goes through a voltage divider first
+    Serial.println("Battery voltage: " + String(batteryVoltage, 3) + " V");
+
+    float percentage = batteryVoltage / 4.2 * 100.0; // Assuming 4.2V is the fully charged voltage
+
+    return percentage;
+}
 
 /**
  * @param voltage_mv - The voltage in millivolts.
