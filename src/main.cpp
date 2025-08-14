@@ -382,7 +382,7 @@ void handleSetTitle() {
     if (server.hasArg("title")) {
         String newTitle = server.arg("title");
         if (newTitle.length() > 20) {
-            server.send(400, "text/plain", "Title too long (max 10 chars).");
+            server.send(400, "text/plain", "Title too long (max 20 chars).");
         } else {
             oledTitle = newTitle;
             preferences.begin("my-app", false);
