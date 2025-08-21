@@ -28,6 +28,7 @@
 #include <ADS1x15.h>
 #include <Preferences.h>
 #include <CayenneLPP.h>
+#include <DHT20.h>
 #include "index.h" // Include the HTML content for the web server
 
 
@@ -35,6 +36,7 @@
 // LoRa-E5 Module UART pins
 #define WIO_RX_PIN 20
 #define WIO_TX_PIN 21
+#define VUSB_SENSE_PIN 3
 #define RECEIVE_WINDOW 1000 // Timeout for receiving packets in milliseconds
 
 // --- ADS1115 Pin Definitions ---
@@ -55,6 +57,9 @@ Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 #define Tn 25 // nominal temperature in Celsius
 #define BETA 3950.0
 #define KELVIN_CONVERSION 273.15
+
+// --- DHT20 Configuration ---
+#define DHT20_ADDRESS 0x38
 
 // --- Object Instantiation ---
 WebServer server(80);
@@ -115,10 +120,13 @@ void LoRa_setup(void) {
 #define DISPLAY_INTERVAL_KEY "display_interval"
 
 // Define channels for each sensor to differentiate them in the payload
-#define DISSOLVED_OXYGEN_CHANNEL 1
-#define AIR_QUALITY_CHANNEL      2
-#define TEMPERATURE_CHANNEL      3
-#define BATTERY_CHANNEL          4
+#define DISSOLVED_OXYGEN_CHANNEL        1
+#define AIR_QUALITY_CHANNEL             2
+#define TEMPERATURE_CHANNEL             3
+#define BATTERY_CHANNEL                 4
+#define ENCLOSURE_TEMPERATURE_CHANNEL   5
+#define ENCLOSURE_HUMIDITY_CHANNEL      6
+#define VUSB_SENSE_CHANNEL              7
 
 // --- Global Variables ---
 unsigned long previousSensorMillis = 0;
@@ -132,6 +140,7 @@ float defaultWaterTemperature = DEFAULT_WATER_TEMP;
 char buffer[128];
 bool useWiFiManager; // Set to true to use WiFi Manager, false for Soft AP mode
 Preferences preferences;
+DHT20 DHT;
 
 // --- Function Prototypes ---
 void handleRoot();
@@ -143,8 +152,8 @@ void handleSetRo();
 void handleSetTempToggle();
 void handleSetDefaultTemp();
 void handleGetSettings();
-void displaySensorData(float gasPPM, float oxygen, float temperature, float batteryPercentage);
-void sendSensorDataLora(float gasPPM, float oxygen, float temperature, float batteryPercentage);
+void displaySensorData(float gasPPM, float oxygen, float temperature, float batteryPercentage, float enclosureTemp, float enclosureHum);
+void sendSensorDataLora(float gasPPM, float oxygen, float temperature, float batteryPercentage, float enclosureTemp, float enclosureHum);
 void processLoraSend();
 float processGasData();
 float processOxygenData(double temperature);
@@ -157,6 +166,8 @@ void setup() {
     Serial.begin(115200);
     while (!Serial);
     Wire.begin(); 
+
+    pinMode(VUSB_SENSE_PIN, INPUT_PULLDOWN);
 
     delay(10000);
 
@@ -250,8 +261,11 @@ void setup() {
     float gasPPM = processGasData();
     float oxygen = processOxygenData(tempForDO);
     float batteryPercentage = processBatteryPercentage();
-    displaySensorData(gasPPM, oxygen, liveTemperature, batteryPercentage);
-    sendSensorDataLora(gasPPM, oxygen, liveTemperature, batteryPercentage);
+    DHT.read();
+    float enclosureHumidity = DHT.getHumidity();
+    float enclosureTemperature = DHT.getTemperature();
+    displaySensorData(gasPPM, oxygen, liveTemperature, batteryPercentage, enclosureTemperature, enclosureHumidity);
+    sendSensorDataLora(gasPPM, oxygen, liveTemperature, batteryPercentage, enclosureTemperature, enclosureHumidity);
 }
 
 void loop() {
@@ -269,7 +283,11 @@ void loop() {
       float oxygen = processOxygenData(tempForDO);
       float batteryPercentage = processBatteryPercentage();
 
-      sendSensorDataLora(gasPPM, oxygen, liveTemperature, batteryPercentage);
+      DHT.read();
+      float enclosureTemp = DHT.getTemperature();
+      float enclosureHum = DHT.getHumidity();
+
+      sendSensorDataLora(gasPPM, oxygen, liveTemperature, batteryPercentage, enclosureTemp, enclosureHum);
     }
 
     if (currentMillis - previousDisplayMillis >= displayInterval) {
@@ -280,7 +298,22 @@ void loop() {
       float tempForDO = useLiveTemperature ? liveTemperature : defaultWaterTemperature;
       float oxygen = processOxygenData(tempForDO);
       float batteryPercentage = processBatteryPercentage();
-      displaySensorData(gasPPM, oxygen, liveTemperature, batteryPercentage);
+      if (DHT.read() == 0) {
+        Serial.println("DHT read successful");
+      }
+      float enclosureTemp = DHT.getTemperature();
+      float enclosureHum = DHT.getHumidity();
+      Serial.println("enclosure Temp: " + String(enclosureTemp));
+      Serial.println("enclosure Hum: " + String(enclosureHum));
+      displaySensorData(gasPPM, oxygen, liveTemperature, batteryPercentage, enclosureTemp, enclosureHum);
+
+      Serial.println("VUSB Sense: " + String(analogRead(VUSB_SENSE_PIN)));
+
+      if (analogRead(VUSB_SENSE_PIN) > 1700) {
+          Serial.println("VUSB is connected");
+      } else {
+          Serial.println("VUSB is not connected");
+      }
     }
 
     if (SerialLoRa.available()) {
@@ -330,12 +363,23 @@ void processLoraSend() {
     }
 }
 
-void sendSensorDataLora(float gasPPM, float oxygen, float temperature, float batteryPercentage) {
+void sendSensorDataLora(float gasPPM, float oxygen, float temperature, float batteryPercentage, float enclosureTemp, float enclosureHum) {
     CayenneLPP lpp(51);
     lpp.addAnalogInput(DISSOLVED_OXYGEN_CHANNEL, oxygen);
     lpp.addAnalogInput(AIR_QUALITY_CHANNEL, gasPPM);
     lpp.addTemperature(TEMPERATURE_CHANNEL, temperature);
     lpp.addAnalogInput(BATTERY_CHANNEL, batteryPercentage);
+    lpp.addTemperature(ENCLOSURE_TEMPERATURE_CHANNEL, enclosureTemp);
+    lpp.addRelativeHumidity(ENCLOSURE_HUMIDITY_CHANNEL, enclosureHum);
+    lpp.addDigitalInput(VUSB_SENSE_CHANNEL, (analogRead(VUSB_SENSE_PIN) > 1700));
+
+    Serial.println("Sending LoRa packet:");
+    Serial.print("Gas PPM: "); Serial.println(gasPPM);
+    Serial.print("Oxygen: "); Serial.println(oxygen);
+    Serial.print("Temperature: "); Serial.println(temperature);
+    Serial.print("Battery: "); Serial.println(batteryPercentage);
+    Serial.print("Enclosure Temp: "); Serial.println(enclosureTemp);
+    Serial.print("Enclosure Hum: "); Serial.println(enclosureHum);
 
     uint8_t* payload_buffer = lpp.getBuffer();
     uint8_t payload_size = lpp.getSize();
@@ -392,7 +436,9 @@ void handleSetTitle() {
             float temperature = processWaterTempData();
             float oxygen = processOxygenData(temperature);
             float batteryPercentage = processBatteryPercentage();
-            displaySensorData(gasPPM, oxygen, temperature, batteryPercentage);
+            float enclosureTemperature = DHT.getTemperature();
+            float enclosureHumidity = DHT.getHumidity();
+            displaySensorData(gasPPM, oxygen, temperature, batteryPercentage, enclosureTemperature, enclosureHumidity);
             server.send(200, "text/plain", "Title updated successfully!");
         }
     } else {
@@ -475,7 +521,7 @@ void handleGetSettings() {
 }
 
 // --- Display Functions ---
-void displaySensorData(float gasPPM, float oxygen, float temperature, float batteryPercentage) {
+void displaySensorData(float gasPPM, float oxygen, float temperature, float batteryPercentage, float enclosureTemp, float enclosureHum) {
     display.clearDisplay();
     display.setCursor(0, 0);
 
@@ -516,9 +562,14 @@ void displaySensorData(float gasPPM, float oxygen, float temperature, float batt
     }
     display.println();
 
-    display.print("Battery: ");
-    display.print(batteryPercentage, 1);
-    display.println(" %");
+    // vusb is connected display that mains power is active, else display batt percentage
+    if (analogRead(VUSB_SENSE_PIN) > 1700) {
+        display.print("Power: Mains");
+    } else {
+        display.print("Battery: ");
+        display.print(batteryPercentage, 1);
+        display.println(" %");
+    }
 
     display.display();
 }
