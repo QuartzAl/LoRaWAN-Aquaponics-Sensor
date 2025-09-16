@@ -66,11 +66,12 @@ WebServer server(80);
 ADS1115 ADS(0x48);
 
 // --- LoRa Message Status Handling ---
-enum LoraStatus { IDLE, SENDING, ACK_SUCCESS, ACK_FAILED };
-LoraStatus loraStatus = IDLE;
+enum LoraWebStatus { IDLE, SENDING, ACK_SUCCESS, ACK_FAILED };
+LoraWebStatus loraWebStatus = IDLE;
 String messageToSend = "";
 extern HardwareSerial SerialLoRa;
 const unsigned long loraTimeout = 6000; // Timeout for ACK in milliseconds
+bool loraJoined = false;
 
 
 /************************LORA SET UP*******************************************************************/
@@ -191,6 +192,7 @@ void setup() {
     while (lora.setOTAAJoin(JOIN, 10000) == 0) {
         // Retry join
     }
+    loraJoined = true;
     if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
         Serial.println(F("SSD1306 allocation failed"));
         for (;;);
@@ -272,22 +274,28 @@ void loop() {
     server.handleClient();
     processLoraSend(); // Check if we need to send a LoRa message
     ADS.setGain(ADS1X15_GAIN_2048MV);
+    if (!loraJoined) {
+        while (lora.setOTAAJoin(JOIN, 10000) == 0) {
+            // Retry join
+        }
+        loraJoined = true;
+    }
 
     unsigned long currentMillis = millis();
     if (currentMillis - previousSensorMillis >= sendInterval) {
-      previousSensorMillis = currentMillis;
+        previousSensorMillis = currentMillis;
 
-      float gasPPM = processGasData();
-      float liveTemperature = processWaterTempData();
-      float tempForDO = useLiveTemperature ? liveTemperature : defaultWaterTemperature;
-      float oxygen = processOxygenData(tempForDO);
-      float batteryPercentage = processBatteryPercentage();
+        float gasPPM = processGasData();
+        float liveTemperature = processWaterTempData();
+        float tempForDO = useLiveTemperature ? liveTemperature : defaultWaterTemperature;
+        float oxygen = processOxygenData(tempForDO);
+        float batteryPercentage = processBatteryPercentage();
 
-      DHT.read();
-      float enclosureTemp = DHT.getTemperature();
-      float enclosureHum = DHT.getHumidity();
+        DHT.read();
+        float enclosureTemp = DHT.getTemperature();
+        float enclosureHum = DHT.getHumidity();
 
-      sendSensorDataLora(gasPPM, oxygen, liveTemperature, batteryPercentage, enclosureTemp, enclosureHum);
+        sendSensorDataLora(gasPPM, oxygen, liveTemperature, batteryPercentage, enclosureTemp, enclosureHum);
     }
 
     if (currentMillis - previousDisplayMillis >= displayInterval) {
@@ -344,7 +352,7 @@ void loop() {
 
 // --- LoRa Functions ---
 void processLoraSend() {
-    if (loraStatus == SENDING) {
+    if (loraWebStatus == SENDING) {
         if (!messageToSend.isEmpty()) {
             Serial.print("Sending LoRa message from web: ");
             Serial.println(messageToSend);
@@ -352,10 +360,10 @@ void processLoraSend() {
             bool sentOk = lora.transferPacket((unsigned char*)(messageToSend.c_str()), messageToSend.length(), Tx_and_ACK_RX_timeout);
 
             if (sentOk) { 
-                loraStatus = ACK_SUCCESS;
+                loraWebStatus = ACK_SUCCESS;
                 Serial.println("LoRa message sent!");
             } else {
-                loraStatus = ACK_FAILED;
+                loraWebStatus = ACK_FAILED;
                 Serial.println("LoRa message failed to send.");
             }
             messageToSend = ""; // Clear message after attempting to send
@@ -383,7 +391,12 @@ void sendSensorDataLora(float gasPPM, float oxygen, float temperature, float bat
 
     uint8_t* payload_buffer = lpp.getBuffer();
     uint8_t payload_size = lpp.getSize();
-    lora.transferPacket(payload_buffer, payload_size, Tx_and_ACK_RX_timeout);
+    unsigned int time_ret = lora.transferPacket(payload_buffer, payload_size, Tx_and_ACK_RX_timeout);
+    if (time_ret == 0) {
+        Serial.println("LoRa packet failed to send.");
+        loraJoined = false;
+    }
+
 }
 
 // --- Web Server Handlers ---
@@ -393,9 +406,9 @@ void handleRoot() {
 
 void handleSend() {
     if (server.hasArg("message")) {
-        if (loraStatus == IDLE || loraStatus == ACK_SUCCESS || loraStatus == ACK_FAILED) {
+        if (loraWebStatus == IDLE || loraWebStatus == ACK_SUCCESS || loraWebStatus == ACK_FAILED) {
             messageToSend = server.arg("message");
-            loraStatus = SENDING;
+            loraWebStatus = SENDING;
             server.send(200, "text/plain", "Message queued for sending.");
         } else {
             server.send(503, "text/plain", "Server busy sending previous message.");
@@ -407,15 +420,15 @@ void handleSend() {
 
 void handleStatus() {
     String statusMessage = "IDLE";
-    switch (loraStatus) {
+    switch (loraWebStatus) {
         case SENDING:      statusMessage = "SENDING"; break;
         case ACK_SUCCESS:
             statusMessage = "SUCCESS";
-            loraStatus = IDLE; // Reset status after reporting
+            loraWebStatus = IDLE; // Reset status after reporting
             break;
         case ACK_FAILED:
             statusMessage = "FAILED";
-            loraStatus = IDLE; // Reset status after reporting
+            loraWebStatus = IDLE; // Reset status after reporting
             break;
         case IDLE: break;
     }
