@@ -18,18 +18,19 @@
 // - Adafruit GFX Library: https://github.com/adafruit/Adafruit-GFX-Library
 // -----------------------------------------------------------------------------
 
+
 #include <WiFi.h>
 #include <WebServer.h>
 #include <WiFiManager.h>
 #include <Wire.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
-#include "LoRa-E5.h"
 #include <ADS1x15.h>
 #include <Preferences.h>
 #include <CayenneLPP.h>
 #include <DHT20.h>
 #include "index.h" // Include the HTML content for the web server
+#include <LoRa-E5.h>
 
 
 // --- Pin Definitions ---
